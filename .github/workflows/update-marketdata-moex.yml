@@ -116,7 +116,7 @@ jobs:
     
     - name: Convert tsv to json
       run: |
-        fileDir="$GITHUB_WORKSPACE/marketdata/sectors"
+        fileDir="$GITHUB_WORKSPACE/sectors"
         jq --compact-output  -R -s 'split("\n") | .[1:-1] | map(split("\t") | {
             sector: .[0],
             ticker: .[1],
