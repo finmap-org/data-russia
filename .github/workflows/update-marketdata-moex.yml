@@ -60,7 +60,7 @@ jobs:
         date=$(TZ='Europe/Moscow' date +'%Y-%m-%d')
         echo "START_DATE=$date" >> $GITHUB_ENV
         echo "END_DATE=$date" >> $GITHUB_ENV
-        OUTPUT_FOLDER="$GITHUB_WORKSPACE/data/$(TZ='Europe/Moscow' date +'%Y/%m/%d')"
+        OUTPUT_FOLDER="$GITHUB_WORKSPACE/marketdata/$(TZ='Europe/Moscow' date +'%Y/%m/%d')"
         mkdir -p $OUTPUT_FOLDER
         # MOEX ISS provides currencyID only for historical data, so request BOARDID as a workaround:
         response_code=$(curl --silent --output "$OUTPUT_FOLDER/raw/tmp-moex.json" --write-out "%{http_code}" "${{ env.CI_URL }}/engines/stock/markets/shares/securities.json?iss.meta=off&marketdata.columns=SECID,BOARDID,OPEN,LAST,VOLTODAY,VALTODAY,NUMTRADES,ISSUECAPITALIZATION")
@@ -76,7 +76,7 @@ jobs:
         date=$(TZ='Europe/Moscow' date -d 'yesterday' +'%Y-%m-%d')
         echo "START_DATE=$date" >> $GITHUB_ENV
         echo "END_DATE=$date" >> $GITHUB_ENV
-        OUTPUT_FOLDER="$GITHUB_WORKSPACE/data/$(TZ='Europe/Moscow' date -d 'yesterday' +'%Y/%m/%d')"
+        OUTPUT_FOLDER="$GITHUB_WORKSPACE/marketdata/$(TZ='Europe/Moscow' date -d 'yesterday' +'%Y/%m/%d')"
         mkdir -p $OUTPUT_FOLDER
         response_code=$(curl --silent --output "$OUTPUT_FOLDER/raw/moex.json" --write-out "%{http_code}" "${{ env.CI_URL }}/history/engines/stock/totals/boards/MRKT/securities.json?iss.meta=off&date=${date}&securities.columns=SECID,CURRENCYID,OPEN,CLOSE,VOLUME,VALUE,NUMTRADES,DAILYCAPITALIZATION")
         if [ "${response_code}" -ne 200 ]; then
@@ -100,7 +100,7 @@ jobs:
           current_date=$(date -d "@$current_seconds" +"%Y-%m-%d")
           
           # Create the directory structure
-          OUTPUT_FOLDER="$GITHUB_WORKSPACE/data/$(TZ='Europe/Moscow' date -d "@$current_seconds" +'%Y/%m/%d')"
+          OUTPUT_FOLDER="$GITHUB_WORKSPACE/marketdata/$(TZ='Europe/Moscow' date -d "@$current_seconds" +'%Y/%m/%d')"
           mkdir -p $OUTPUT_FOLDER
           
           # Get data
@@ -116,7 +116,7 @@ jobs:
     
     - name: Convert tsv to json
       run: |
-        fileDir="$GITHUB_WORKSPACE/data/sectors"
+        fileDir="$GITHUB_WORKSPACE/marketdata/sectors"
         jq --compact-output  -R -s 'split("\n") | .[1:-1] | map(split("\t") | {
             sector: .[0],
             ticker: .[1],
@@ -136,7 +136,7 @@ jobs:
         function datafile_generator() {
           data_folder="$1"
           cd "${data_folder}"
-          jq --compact-output  --slurpfile tsv $GITHUB_WORKSPACE/data/sectors/moex.json.TMP '
+          jq --compact-output  --slurpfile tsv $GITHUB_WORKSPACE/sectors/moex.json.TMP '
           # Create lookup table once
           ($tsv[0] | map({key: .ticker, value: .}) | from_entries) as $lookup |
           {
@@ -286,7 +286,7 @@ jobs:
         current_seconds=$start_seconds
         while [ $current_seconds -le $end_seconds ]; do
           current_date=$(date -d "@$current_seconds" +"%Y/%m/%d")
-          data_folder=$GITHUB_WORKSPACE/data/$current_date
+          data_folder=$GITHUB_WORKSPACE/marketdata/$current_date
           current_seconds=$((current_seconds + 86400))
           # Check if the current date is a weekend day
           if [ $(date -d "$current_date" +%u) -ge 6 ]; then
@@ -306,7 +306,7 @@ jobs:
     
     - name: Cleanup
       run: |
-        rm "$GITHUB_WORKSPACE/data/sectors/moex.json.TMP"
+        rm "$GITHUB_WORKSPACE/sectors/moex.json.TMP"
     
     - name: Commit and push
       run: |
