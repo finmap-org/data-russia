@@ -20,11 +20,6 @@ on:
         required: true
         type: string
         default: '2025-03-01'
-      stepDays:
-        description: 'Step in days'
-        required: true
-        type: number
-        default: 1
       getDataSkip:
         description: 'do not fetch data from MOEX ISS, process only existing files'
         required: true
