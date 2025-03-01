@@ -76,6 +76,8 @@ jobs:
         sparse-checkout: |
           marketdata/${{ env.START_DATE }}
           marketdata/${{ env.START_DATE }}/raw
+          sectors
+          history
         sparse-checkout-cone-mode: true
 
     - name: EVERY 15 MIN. Get current market data
@@ -320,6 +322,12 @@ jobs:
     - name: Cleanup
       run: |
         rm "$GITHUB_WORKSPACE/sectors/moex.json.TMP"
+
+    - name: Update Histogram Datafiles
+    - uses: finmap-org/finmap-org-actions/update-histogram-data@main
+      with:
+        start_date: ${{ env.START_DATE }}
+        end_date: ${{ env.END_DATE }}
     
     - name: Commit and push
       run: |
