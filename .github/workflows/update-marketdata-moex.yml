@@ -6,8 +6,8 @@ on:
   # Regular Session:     6:50 AM - 3:39 PM UTC
   # After-Hours Trading: 4:00 PM - 8:50 PM UTC
   schedule:
-    - cron: '10 00 * * 2-6'
-    - cron: '15,45 7-19 * * 1-5'
+    - cron: '30 00 * * 2-6'
+    - cron: '*/15 7-19 * * 1-5'
   workflow_dispatch:
     inputs:
       start_date:
@@ -19,12 +19,12 @@ on:
         description: 'End date'
         required: true
         type: string
-        default: '2025-01-31'
+        default: '2025-03-01'
       stepDays:
         description: 'Step in days'
         required: true
         type: number
-        default: 7
+        default: 1
       getDataSkip:
         description: 'do not fetch data from MOEX ISS, process only existing files'
         required: true
@@ -46,21 +46,44 @@ jobs:
     steps:
     - name: Read inputs
       run: |
-        start_date="${{ inputs.start_date }}"
-        end_date="${{ inputs.end_date }}"
-        echo "START_DATE=$start_date" >> $GITHUB_ENV
-        echo "END_DATE=$end_date" >> $GITHUB_ENV
+        if [ "${{ github.event_name }}" == "schedule" ]; then
+          if [ "${{ github.event.schedule }}" == "*/15 7-19 * * 1-5" ]; then
+            START_DATE=$(TZ='Europe/Moscow' date +'%Y-%m-%d')
+            END_DATE=$START_DATE
+            OUTPUT_FOLDER="marketdata/$(TZ='Europe/Moscow' date +'%Y/%m/%d')"
+          elif [ "${{ github.event.schedule }}" == "30 00 * * 2-6" ]; then
+            START_DATE=$(TZ='Europe/Moscow' date -d 'yesterday' +'%Y-%m-%d')
+            END_DATE=$START_DATE
+            OUTPUT_FOLDER="marketdata/$(TZ='Europe/Moscow' date -d 'yesterday' +'%Y/%m/%d')"
+          fi
+        else
+          START_DATE="${{ inputs.start_date }}"
+          END_DATE="${{ inputs.end_date }}"
+        fi
+        echo "START_DATE=$START_DATE" >> $GITHUB_ENV
+        echo "END_DATE=$END_DATE" >> $GITHUB_ENV
+        echo "OUTPUT_FOLDER=$OUTPUT_FOLDER" >> $GITHUB_ENV
 
     - name: Checkout
+      if: ${{ github.event_name == 'workflow_dispatch' }}
       uses: actions/checkout@v4
+      with:
+        fetch-depth: 1
+    
+    - name: Sparse Checkout
+      if: ${{ github.event_name == 'schedule' }}
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 1
+        filter: blob:none
+        sparse-checkout: |
+          marketdata/${{ env.START_DATE }}
+          marketdata/${{ env.START_DATE }}/raw
+        sparse-checkout-cone-mode: true
 
     - name: EVERY 15 MIN. Get current market data
-      if: ${{ github.event.schedule == '15,45 7-19 * * 1-5' }}
+      if: ${{ github.event.schedule == '*/15 7-19 * * 1-5' }}
       run: |
-        date=$(TZ='Europe/Moscow' date +'%Y-%m-%d')
-        echo "START_DATE=$date" >> $GITHUB_ENV
-        echo "END_DATE=$date" >> $GITHUB_ENV
-        OUTPUT_FOLDER="$GITHUB_WORKSPACE/marketdata/$(TZ='Europe/Moscow' date +'%Y/%m/%d')"
         mkdir -p $OUTPUT_FOLDER
         # MOEX ISS provides currencyID only for historical data, so request BOARDID as a workaround:
         response_code=$(curl --silent --output "$OUTPUT_FOLDER/raw/tmp-moex.json" --write-out "%{http_code}" "${{ env.CI_URL }}/engines/stock/markets/shares/securities.json?iss.meta=off&marketdata.columns=SECID,BOARDID,OPEN,LAST,VOLTODAY,VALTODAY,NUMTRADES,ISSUECAPITALIZATION")
@@ -71,12 +94,8 @@ jobs:
         jq '{ "securities": { "data": .marketdata.data | map(select(.[1] == "TQBR" or .[1] == "TQIF" or .[1] == "TQTF" or .[1] == "TQTY")) } }' "$OUTPUT_FOLDER/raw/tmp-moex.json" > "$OUTPUT_FOLDER/raw/moex.json" && rm "$OUTPUT_FOLDER/raw/tmp-moex.json"
    
     - name: DAILY. Get historical data from MOEX ISS
-      if: ${{ github.event.schedule == '10 00 * * 2-6' }}
+      if: ${{ github.event.schedule == '30 00 * * 2-6' }}
       run: |
-        date=$(TZ='Europe/Moscow' date -d 'yesterday' +'%Y-%m-%d')
-        echo "START_DATE=$date" >> $GITHUB_ENV
-        echo "END_DATE=$date" >> $GITHUB_ENV
-        OUTPUT_FOLDER="$GITHUB_WORKSPACE/marketdata/$(TZ='Europe/Moscow' date -d 'yesterday' +'%Y/%m/%d')"
         mkdir -p $OUTPUT_FOLDER
         response_code=$(curl --silent --output "$OUTPUT_FOLDER/raw/moex.json" --write-out "%{http_code}" "${{ env.CI_URL }}/history/engines/stock/totals/boards/MRKT/securities.json?iss.meta=off&date=${date}&securities.columns=SECID,CURRENCYID,OPEN,CLOSE,VOLUME,VALUE,NUMTRADES,DAILYCAPITALIZATION")
         if [ "${response_code}" -ne 200 ]; then
@@ -87,11 +106,9 @@ jobs:
     - name: MANUAL. Get historical data from MOEX ISS
       if: github.event_name == 'workflow_dispatch' && inputs.getDataSkip == false
       run: |
-        start_date="${{ env.START_DATE }}"
-        end_date="${{ env.END_DATE }}"
         # Convert dates to seconds since epoch for comparison
-        start_seconds=$(date -d "$start_date" +%s)
-        end_seconds=$(date -d "$end_date" +%s)
+        start_seconds=$(date -d "$START_DATE" +%s)
+        end_seconds=$(date -d "$END_DATE" +%s)
         
         # Loop through the date range
         current_seconds=$start_seconds
@@ -100,7 +117,7 @@ jobs:
           current_date=$(date -d "@$current_seconds" +"%Y-%m-%d")
           
           # Create the directory structure
-          OUTPUT_FOLDER="$GITHUB_WORKSPACE/marketdata/$(TZ='Europe/Moscow' date -d "@$current_seconds" +'%Y/%m/%d')"
+          OUTPUT_FOLDER="marketdata/$(TZ='Europe/Moscow' date -d "@$current_seconds" +'%Y/%m/%d')"
           mkdir -p $OUTPUT_FOLDER
           
           # Get data
@@ -116,7 +133,6 @@ jobs:
     
     - name: Convert tsv to json
       run: |
-        fileDir="$GITHUB_WORKSPACE/sectors"
         jq --compact-output  -R -s 'split("\n") | .[1:-1] | map(split("\t") | {
             sector: .[0],
             ticker: .[1],
@@ -129,7 +145,7 @@ jobs:
             traceColor: .[7],
             wikiPageIdOriginal: .[8],
             wikiPageIdEng: .[9]
-        })' "$fileDir/moex.tsv" > "$fileDir/moex.json.TMP"
+        })' "sectors/moex.tsv" > "sectors/moex.json.TMP"
     
     - name: Generate datafiles
       run: |
@@ -278,10 +294,8 @@ jobs:
             }
           }' "${data_folder}/raw/moex.json" > "${data_folder}/moex.json"
         }
-        start_date="${{ env.START_DATE }}"
-        end_date="${{ env.END_DATE }}"
-        start_seconds=$(date -d "$start_date" +%s)
-        end_seconds=$(date -d "$end_date" +%s)
+        start_seconds=$(date -d "$START_DATE" +%s)
+        end_seconds=$(date -d "$END_DATE" +%s)
 
         current_seconds=$start_seconds
         while [ $current_seconds -le $end_seconds ]; do
