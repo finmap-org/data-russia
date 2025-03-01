@@ -324,7 +324,7 @@ jobs:
         rm "$GITHUB_WORKSPACE/sectors/moex.json.TMP"
 
     - name: Update Histogram Datafiles
-      uses: finmap-org/finmap-org-actions/update-histogram-data@main
+      uses: finmap-org/actions/update-histogram-data@main
       with:
         start_date: ${{ env.START_DATE }}
         end_date: ${{ env.END_DATE }}
