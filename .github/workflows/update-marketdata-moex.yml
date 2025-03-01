@@ -50,11 +50,9 @@ jobs:
           if [ "${{ github.event.schedule }}" == "*/15 7-19 * * 1-5" ]; then
             START_DATE=$(TZ='Europe/Moscow' date +'%Y-%m-%d')
             END_DATE=$START_DATE
-            OUTPUT_FOLDER="marketdata/$(TZ='Europe/Moscow' date +'%Y/%m/%d')"
           elif [ "${{ github.event.schedule }}" == "30 00 * * 2-6" ]; then
             START_DATE=$(TZ='Europe/Moscow' date -d 'yesterday' +'%Y-%m-%d')
             END_DATE=$START_DATE
-            OUTPUT_FOLDER="marketdata/$(TZ='Europe/Moscow' date -d 'yesterday' +'%Y/%m/%d')"
           fi
         else
           START_DATE="${{ inputs.start_date }}"
@@ -62,7 +60,6 @@ jobs:
         fi
         echo "START_DATE=$START_DATE" >> $GITHUB_ENV
         echo "END_DATE=$END_DATE" >> $GITHUB_ENV
-        echo "OUTPUT_FOLDER=$OUTPUT_FOLDER" >> $GITHUB_ENV
 
     - name: Checkout
       if: ${{ github.event_name == 'workflow_dispatch' }}
@@ -84,6 +81,7 @@ jobs:
     - name: EVERY 15 MIN. Get current market data
       if: ${{ github.event.schedule == '*/15 7-19 * * 1-5' }}
       run: |
+        OUTPUT_FOLDER="$( echo marketdata/$START_DATE | sed 's/-/\//g' )"
         mkdir -p $OUTPUT_FOLDER
         # MOEX ISS provides currencyID only for historical data, so request BOARDID as a workaround:
         response_code=$(curl --silent --output "$OUTPUT_FOLDER/raw/tmp-moex.json" --write-out "%{http_code}" "${{ env.CI_URL }}/engines/stock/markets/shares/securities.json?iss.meta=off&marketdata.columns=SECID,BOARDID,OPEN,LAST,VOLTODAY,VALTODAY,NUMTRADES,ISSUECAPITALIZATION")
@@ -96,6 +94,7 @@ jobs:
     - name: DAILY. Get historical data from MOEX ISS
       if: ${{ github.event.schedule == '30 00 * * 2-6' }}
       run: |
+        OUTPUT_FOLDER="$( echo marketdata/$START_DATE | sed 's/-/\//g' )"
         mkdir -p $OUTPUT_FOLDER
         response_code=$(curl --silent --output "$OUTPUT_FOLDER/raw/moex.json" --write-out "%{http_code}" "${{ env.CI_URL }}/history/engines/stock/totals/boards/MRKT/securities.json?iss.meta=off&date=${date}&securities.columns=SECID,CURRENCYID,OPEN,CLOSE,VOLUME,VALUE,NUMTRADES,DAILYCAPITALIZATION")
         if [ "${response_code}" -ne 200 ]; then
