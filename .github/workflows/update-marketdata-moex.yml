@@ -1,0 +1,380 @@
+name: 'Update Market Data: MOEX'
+
+on:
+  # Moscow Exchange trading hours
+  # Pre-Market Trading:  4:00 AM - 6:50 AM UTC
+  # Regular Session:     6:50 AM - 3:39 PM UTC
+  # After-Hours Trading: 4:00 PM - 8:50 PM UTC
+  schedule:
+    - cron: '45 08 * * 2-6'
+    - cron: '*/15 7-19 * * 1-5'
+  workflow_dispatch:
+    inputs:
+      start_date:
+        description: 'Start date, YYYY/MM/DD'
+        required: true
+        type: string
+        default: '2011/12/19'
+      end_date:
+        description: 'End date, YYYY/MM/DD'
+        required: true
+        type: string
+        default: '2025/03/01'
+      getDataSkip:
+        description: 'do not fetch data from MOEX ISS, process only existing files'
+        required: true
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    env: 
+      CI_COMMIT_MESSAGE: 'Update Market Data: MOEX'
+      CI_COMMIT_AUTHOR: github-actions[bot]
+      CI_COMMIT_AUTHOR_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+      CI_URL: https://iss.moex.com/iss
+
+    steps:
+    - name: Read inputs
+      run: |
+        if [ "${{ github.event_name }}" == "schedule" ]; then
+          if [ "${{ github.event.schedule }}" == "*/15 7-19 * * 1-5" ]; then
+            START_DATE=$(TZ='Europe/Moscow' date +'%Y/%m/%d')
+            END_DATE=$START_DATE
+          elif [ "${{ github.event.schedule }}" == "45 08 * * 2-6" ]; then
+            START_DATE=$(TZ='Europe/Moscow' date -d 'yesterday' +'%Y/%m/%d')
+            END_DATE=$START_DATE
+          fi
+        else
+          START_DATE="${{ inputs.start_date }}"
+          END_DATE="${{ inputs.end_date }}"
+        fi
+        echo "START_DATE=$START_DATE" >> $GITHUB_ENV
+        echo "END_DATE=$END_DATE" >> $GITHUB_ENV
+
+    - name: Checkout
+      if: ${{ github.event_name == 'workflow_dispatch' }}
+      uses: actions/checkout@v4
+      with:
+        path: 'data-russia'
+        fetch-depth: 1
+    
+    - name: Sparse Checkout
+      if: ${{ github.event_name == 'schedule' }}
+      uses: actions/checkout@v4
+      with:
+        path: 'data-russia'
+        fetch-depth: 1
+        filter: blob:none
+        sparse-checkout: |
+          marketdata/${{ env.START_DATE }}
+          marketdata/${{ env.START_DATE }}/raw
+          sectors
+          history
+        sparse-checkout-cone-mode: true
+
+    - name: EVERY 15 MIN. Get current market data
+      if: ${{ github.event.schedule == '*/15 7-19 * * 1-5' }}
+      run: |
+        OUTPUT_FOLDER="data-russia/marketdata/${START_DATE}"
+        mkdir -p "${OUTPUT_FOLDER}/raw"
+        # MOEX ISS provides currencyID only for historical data, so request BOARDID as a workaround:
+        response_code=$(curl --silent \
+          --output "$OUTPUT_FOLDER/raw/tmp-moex.json" \
+          --write-out "%{http_code}" \
+          -H 'Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7' \
+          -H 'Accept-Language: en-US,en;q=0.9' \
+          -H 'Cache-Control: no-cache' \
+          -H 'Connection: keep-alive' \
+          -H 'DNT: 1' \
+          -H 'Pragma: no-cache' \
+          -H 'Sec-Fetch-Dest: document' \
+          -H 'Sec-Fetch-Mode: navigate' \
+          -H 'Sec-Fetch-Site: none' \
+          -H 'Sec-Fetch-User: ?1' \
+          -H 'Upgrade-Insecure-Requests: 1' \
+          "${{ env.CI_URL }}/engines/stock/markets/shares/securities.json?iss.meta=off&marketdata.columns=SECID,BOARDID,OPEN,LAST,VOLTODAY,VALTODAY,NUMTRADES,ISSUECAPITALIZATION" )
+        if [ "${response_code}" -ne 200 ]; then
+          echo "Request failed with response code: ${response_code}"
+          exit 1
+        fi
+        jq '{ "securities": { "data": .marketdata.data | map(select(.[1] == "TQBR" or .[1] == "TQIF" or .[1] == "TQTF" or .[1] == "TQTY")) } }' "$OUTPUT_FOLDER/raw/tmp-moex.json" > "$OUTPUT_FOLDER/raw/moex.json" && rm "$OUTPUT_FOLDER/raw/tmp-moex.json"
+   
+    - name: DAILY. Get historical data from MOEX ISS
+      if: ${{ github.event.schedule == '45 08 * * 2-6' }}
+      run: |
+        OUTPUT_FOLDER="data-russia/marketdata/${START_DATE}"
+        mkdir -p "${OUTPUT_FOLDER}/raw"
+        date="$( echo $START_DATE | sed 's/\//-/g' )"
+        response_code=$(curl --silent \
+          --output "$OUTPUT_FOLDER/raw/moex.json" \
+          --write-out "%{http_code}" \
+          -H 'Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7' \
+          -H 'Accept-Language: en-US,en;q=0.9' \
+          -H 'Cache-Control: no-cache' \
+          -H 'Connection: keep-alive' \
+          -H 'DNT: 1' \
+          -H 'Pragma: no-cache' \
+          -H 'Sec-Fetch-Dest: document' \
+          -H 'Sec-Fetch-Mode: navigate' \
+          -H 'Sec-Fetch-Site: none' \
+          -H 'Sec-Fetch-User: ?1' \
+          -H 'Upgrade-Insecure-Requests: 1' \
+          "${{ env.CI_URL }}/history/engines/stock/totals/boards/MRKT/securities.json?iss.meta=off&date=${date}&securities.columns=SECID,CURRENCYID,OPEN,CLOSE,VOLUME,VALUE,NUMTRADES,DAILYCAPITALIZATION")
+        if [ "${response_code}" -ne 200 ]; then
+          echo "Request failed with response code: ${response_code}"
+          exit 1
+        fi
+    
+    - name: MANUAL. Get historical data from MOEX ISS
+      if: github.event_name == 'workflow_dispatch' && inputs.getDataSkip == false
+      run: |
+        # Convert dates to seconds since epoch for comparison
+        start_seconds=$(date -d "$START_DATE" +%s)
+        end_seconds=$(date -d "$END_DATE" +%s)
+        
+        # Loop through the date range
+        current_seconds=$start_seconds
+        while [ $current_seconds -le $end_seconds ]; do
+          # Format the current date into YYYY-MM-DD
+          current_date=$(date -d "@$current_seconds" +"%Y-%m-%d")
+          
+          # Create the directory structure
+          OUTPUT_FOLDER="data-russia/marketdata/$(TZ='Europe/Moscow' date -d "@$current_seconds" +'%Y/%m/%d')"
+          mkdir -p "${OUTPUT_FOLDER}/raw"
+          
+          # Get data
+          response_code=$(curl --silent \
+            --output "$OUTPUT_FOLDER/raw/moex.json" \
+            --write-out "%{http_code}" \
+            -H 'Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7' \
+            -H 'Accept-Language: en-US,en;q=0.9' \
+            -H 'Cache-Control: no-cache' \
+            -H 'Connection: keep-alive' \
+            -H 'DNT: 1' \
+            -H 'Pragma: no-cache' \
+            -H 'Sec-Fetch-Dest: document' \
+            -H 'Sec-Fetch-Mode: navigate' \
+            -H 'Sec-Fetch-Site: none' \
+            -H 'Sec-Fetch-User: ?1' \
+            -H 'Upgrade-Insecure-Requests: 1' \
+            "${{ env.CI_URL }}/history/engines/stock/totals/boards/MRKT/securities.json?iss.meta=off&date=${current_date}&securities.columns=SECID,CURRENCYID,OPEN,CLOSE,VOLUME,VALUE,NUMTRADES,DAILYCAPITALIZATION")
+          if [ "${response_code}" -ne 200 ]; then
+            echo "Request failed with response code: ${response_code}"
+            exit 1
+          fi
+        
+          # Increment the current date by one day (86400 seconds)
+          current_seconds=$((current_seconds + 86400))
+        done
+    
+    - name: Convert tsv to json
+      run: |
+        jq --compact-output  -R -s 'split("\n") | .[1:-1] | map(split("\t") | {
+            sector: .[0],
+            ticker: .[1],
+            nameEng: .[2],
+            nameEngShort: "",
+            nameOriginalShort: .[3],
+            nameOriginal: .[4],
+            listedFrom: .[5],
+            listedTill: .[6],
+            traceColor: .[7],
+            wikiPageIdOriginal: .[8],
+            wikiPageIdEng: .[9]
+        })' "data-russia/sectors/moex.tsv" > "data-russia/sectors/moex.json.TMP"
+    
+    - name: Generate datafiles
+      run: |
+        function datafile_generator() {
+          data_folder="$1"
+          cd "${data_folder}"
+          jq --compact-output  --slurpfile tsv $GITHUB_WORKSPACE/data-russia/sectors/moex.json.TMP '
+          # Create lookup table once
+          ($tsv[0] | map({key: .ticker, value: .}) | from_entries) as $lookup |
+          {
+            "securities": {
+              "columns": [
+                "exchange",
+                "country",
+                "type",
+                "sector",
+                "industry",
+                "currencyId",
+                "ticker",
+                "nameEng",
+                "nameEngShort",
+                "nameOriginal",
+                "nameOriginalShort",
+                "priceOpen",
+                "priceLastSale",
+                "priceChangePct",
+                "volume",
+                "value",
+                "numTrades",
+                "marketCap",
+                "listedFrom",
+                "listedTill",
+                "wikiPageIdEng",
+                "wikiPageIdOriginal",
+                "nestedItemsCount"
+              ],
+              "data": (
+                # First, create the regular data array
+                [.securities.data[] as $row |
+                  ($lookup[$row[0] // ""] // {}) as $tsv_row |
+                  [
+                    "MOEX",
+                    "",
+                    "",
+                    ($tsv_row.sector // "Miscellaneous"),
+                    "",
+                    (if $row[1] == "SUR" then "RUB" else "" end),
+                    $row[0],
+                    ($tsv_row.nameEng // ""),
+                    "",
+                    ($tsv_row.nameOriginal // ""),
+                    ($tsv_row.nameOriginalShort // ""),
+                    (if $row[2] == null then 0 else $row[2] end),
+                    (if $row[3] == null then 0 else $row[3] end),
+                    (if $row[2] == null or $row[2] == 0 then 0
+                      # else (($row[3] - $row[2]) / $row[2] * 100)
+                      # Round the number to 2 decimal places
+                      else (($row[3] - $row[2]) / $row[2] * 100 * 100 | round) / 100
+                    end),
+                    (if $row[4] == null then 0 else $row[4] end),
+                    (if $row[5] == null then 0 else $row[5] end),
+                    (if $row[6] == null then 0 else $row[6] end),
+                    (if $row[7] == null
+                        or $tsv_row.sector == "Foreign Companies"
+                        or ($row[1] != "SUR" and $row[1] != "TQBR")
+                        then 0
+                      else $row[7]
+                    end),
+                    ($tsv_row.listedFrom // ""),
+                    ($tsv_row.listedTill // ""),
+                    ($tsv_row.wikiPageIdEng // ""),
+                    ($tsv_row.wikiPageIdOriginal // ""),
+                    0
+                  ]
+                ] as $original_data |
+                
+                # Then add sector summaries
+                ($original_data | group_by(.[3]) | map(
+                  [
+                    "MOEX",
+                    "",
+                    "sector",
+                    "Moscow Exchange",
+                    "",
+                    "",
+                    (.[0][3]),
+                    (.[0][3]),
+                    (.[0][3]),
+                    (.[0][3]),
+                    (.[0][3]),
+                    0,
+                    0,
+                    (if (map(.[17]) | add) == 0 then 0
+                      # else (map(.[13] * .[17]) | add) / (map(.[17]) | add)
+                      # Round the number to 2 decimal places
+                      else ((map(.[13] * .[17]) | add) / (map(.[17]) | add) * 100 | round / 100)
+                    end),
+                    (map(.[14]) | add),
+                    (map(.[15]) | add),
+                    (map(.[16]) | add),
+                    (map(.[17]) | add),
+                    "",
+                    "",
+                    "",
+                    "",
+                    (map(.[17]) | length)
+                  ]
+                )) as $sector_summaries |
+                
+                # Finally add the grand total
+                ($original_data | [
+                  [
+                    "MOEX",
+                    "",
+                    "sector",
+                    "",
+                    "",
+                    "",
+                    "Moscow Exchange",
+                    "Moscow Exchange",
+                    "Moscow Exchange",
+                    "Мосбиржа",
+                    "Московская Биржа",
+                    0,
+                    0,
+                    (if (map(.[17]) | add) == 0 then 0
+                      # else (map(.[13] * .[17]) | add) / (map(.[17]) | add)
+                      # Round the number to 2 decimal places
+                      else ((map(.[13] * .[17]) | add) / (map(.[17]) | add) * 100 | round / 100)
+                    end),
+                    (map(.[14]) | add),
+                    (map(.[15]) | add),
+                    (map(.[16]) | add),
+                    (map(.[17]) | add),
+                    "",
+                    "",
+                    "",
+                    "",
+                    (map(.[17]) | length)
+                  ]
+                ]) as $total_summary |
+                
+                # Combine all arrays
+                ($original_data + $sector_summaries + $total_summary)
+              )
+            }
+          }' "${data_folder}/raw/moex.json" > "${data_folder}/moex.json"
+        }
+        start_seconds=$(date -d "$START_DATE" +%s)
+        end_seconds=$(date -d "$END_DATE" +%s)
+
+        current_seconds=$start_seconds
+        while [ $current_seconds -le $end_seconds ]; do
+          current_date=$(date -d "@$current_seconds" +"%Y/%m/%d")
+          data_folder=$GITHUB_WORKSPACE/data-russia/marketdata/$current_date
+          current_seconds=$((current_seconds + 86400))
+          # Check if the current date is a weekend day
+          if [ $(date -d "$current_date" +%u) -ge 6 ]; then
+            continue
+          fi
+          # Check if file exists
+          if [ ! -e "$data_folder" ]; then
+            continue
+          fi
+          # Skip empty files
+          data_items=$(jq '.securities.data | length' "${data_folder}/raw/moex.json")
+          if [ "$data_items" -eq "0" ]; then
+            continue
+          fi
+          datafile_generator "$data_folder"
+        done
+    
+    - name: Cleanup
+      run: |
+        rm "$GITHUB_WORKSPACE/data-russia/sectors/moex.json.TMP"
+
+    - name: Update Histogram Datafiles
+      uses: finmap-org/actions/update-histogram-data@main
+      with:
+        workdir: data-russia
+        start_date: ${{ env.START_DATE }}
+        end_date: ${{ env.END_DATE }}
+    
+    - name: Commit and push
+      run: |
+        cd "$GITHUB_WORKSPACE/data-russia"
+        git config --global user.name "${{ env.CI_COMMIT_AUTHOR }}"
+        git config --global user.email "${{ env.CI_COMMIT_AUTHOR_EMAIL }}"
+        git add --all
+        git commit -m "${{ env.CI_COMMIT_MESSAGE }}"
+        git push
